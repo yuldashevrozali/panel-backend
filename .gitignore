@@ -3,6 +3,9 @@
 .vscode/
 *.swp
 
+# Separate frontend repository (kept out of backend repo)
+my-app/
+
 # Node / Next.js
 node_modules/
 **/node_modules/
