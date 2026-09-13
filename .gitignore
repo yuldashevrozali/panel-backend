@@ -1,0 +1,29 @@
+# OS/editor
+.DS_Store
+.vscode/
+*.swp
+
+# Node / Next.js
+node_modules/
+**/node_modules/
+**/.next/
+**/out/
+**/.turbo/
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/.venv/
+**/venv/
+
+# Environment files
+**/.env
+**/.env.*
+!**/.env.example
+
+# Logs and build artifacts
+*.log
+coverage/
+
+# Misc
+.DS_Store
