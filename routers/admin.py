@@ -1,11 +1,13 @@
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, or_
+from sqlalchemy import String, func, or_
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from database.connection import get_db
-from database.models import Order, User
+from database.models import Order, PaymentRequest, User, WalletTransaction
 from routers.security import (
     PRIMARY_ADMIN_EMAIL,
     is_primary_super_admin,
@@ -16,6 +18,9 @@ from schemas.admin import (
     AdminCreate,
     AdminOrderList,
     AdminOrderRead,
+    AdminPaymentList,
+    AdminPaymentRead,
+    AdminRejectPayload,
     AdminStatsRead,
     AdminUserList,
     AdminUserRead,
@@ -362,3 +367,209 @@ def remove_admin(
     db.commit()
 
     return {"message": "Admin demoted to user successfully."}
+
+
+def serialize_admin_payment(p: PaymentRequest, db: Session) -> AdminPaymentRead:
+    user = db.query(User).filter(User.id == p.user_id).first()
+    reviewer = (
+        db.query(User).filter(User.id == p.reviewed_by).first()
+        if p.reviewed_by
+        else None
+    )
+    return AdminPaymentRead(
+        id=p.id,
+        user_id=p.user_id,
+        user_email=user.email if user else None,
+        user_name=user.first_name if user else f"User #{p.user_id}",
+        amount=p.amount,
+        currency=p.currency,
+        method=p.method,
+        status=p.status,
+        rejection_reason=p.rejection_reason,
+        reviewed_by=p.reviewed_by,
+        reviewer_email=(
+            reviewer.email
+            if (reviewer and reviewer.email)
+            else (reviewer.first_name if reviewer else None)
+        ),
+        reviewed_at=p.reviewed_at,
+        created_at=p.created_at,
+        updated_at=p.updated_at,
+    )
+
+
+@router.get("/payments", response_model=AdminPaymentList)
+def list_admin_payments(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+    status: str | None = Query(default=None, max_length=20),
+    search: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+):
+    query = db.query(PaymentRequest)
+
+    if status:
+        query = query.filter(
+            func.lower(PaymentRequest.status) == status.strip().lower()
+        )
+
+    if search:
+        term = f"%{search.strip().lower()}%"
+        query = query.join(User, PaymentRequest.user_id == User.id).filter(
+            or_(
+                func.lower(User.email).like(term),
+                func.lower(User.first_name).like(term),
+                func.cast(PaymentRequest.id, String).like(term),
+                func.cast(PaymentRequest.user_id, String).like(term),
+            )
+        )
+
+    total = query.count()
+    pending_count = (
+        db.query(func.count(PaymentRequest.id))
+        .filter(PaymentRequest.status == "pending")
+        .scalar()
+        or 0
+    )
+
+    requests = (
+        query.order_by(PaymentRequest.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    items = [serialize_admin_payment(p, db) for p in requests]
+
+    return AdminPaymentList(
+        items=items,
+        total=total,
+        pending_count=pending_count,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/payments/{payment_id}", response_model=AdminPaymentRead)
+def get_admin_payment(
+    payment_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    p = db.query(PaymentRequest).filter(PaymentRequest.id == payment_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Payment request not found")
+
+    return serialize_admin_payment(p, db)
+
+
+@router.post("/payments/{payment_id}/approve", response_model=AdminPaymentRead)
+def approve_admin_payment(
+    payment_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    # Lock PaymentRequest row
+    p = (
+        db.query(PaymentRequest)
+        .filter(PaymentRequest.id == payment_id)
+        .with_for_update()
+        .first()
+    )
+
+    if not p:
+        raise HTTPException(status_code=404, detail="Payment request not found")
+
+    if p.status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail="Payment request has already been processed.",
+        )
+
+    # Lock User row
+    user = db.query(User).filter(User.id == p.user_id).with_for_update().first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    now = datetime.now(timezone.utc)
+    balance_before = user.balance or Decimal("0.00")
+    balance_after = balance_before + Decimal(p.amount)
+
+    user.balance = balance_after
+
+    # Create WalletTransaction with payment_request_id (unique constraint protects double approval!)
+    transaction = WalletTransaction(
+        user_id=user.id,
+        payment_request_id=p.id,
+        amount=Decimal(p.amount),
+        transaction_type="deposit",
+        balance_before=balance_before,
+        balance_after=balance_after,
+        metadata_json={
+            "payment_request_id": p.id,
+            "method": p.method,
+            "approved_by": admin.id,
+        },
+        created_at=now,
+    )
+
+    db.add(transaction)
+
+    p.status = "approved"
+    p.reviewed_by = admin.id
+    p.reviewed_at = now
+    p.updated_at = now
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail="Payment request has already been processed.",
+        ) from exc
+
+    db.refresh(p)
+    return serialize_admin_payment(p, db)
+
+
+@router.post("/payments/{payment_id}/reject", response_model=AdminPaymentRead)
+def reject_admin_payment(
+    payment_id: int,
+    payload: AdminRejectPayload = AdminRejectPayload(),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    p = (
+        db.query(PaymentRequest)
+        .filter(PaymentRequest.id == payment_id)
+        .with_for_update()
+        .first()
+    )
+
+    if not p:
+        raise HTTPException(status_code=404, detail="Payment request not found")
+
+    if p.status != "pending":
+        raise HTTPException(
+            status_code=400,
+            detail="Payment request has already been processed.",
+        )
+
+    now = datetime.now(timezone.utc)
+    p.status = "rejected"
+    p.rejection_reason = (
+        payload.rejection_reason.strip()
+        if payload.rejection_reason
+        else "Payment could not be verified."
+    )
+    p.reviewed_by = admin.id
+    p.reviewed_at = now
+    p.updated_at = now
+
+    db.commit()
+    db.refresh(p)
+
+    return serialize_admin_payment(p, db)

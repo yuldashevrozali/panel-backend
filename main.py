@@ -10,6 +10,7 @@ from database.migrations import run_migrations
 from database.models import Base, User
 from routers.admin import router as admin_router
 from routers.auth import router as auth_router
+from routers.payments import router as payments_router
 from routers.security import get_current_user
 from routers.services import router as services_router
 
@@ -105,6 +106,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(services_router)
 app.include_router(admin_router)
+app.include_router(payments_router)
 
 if orders_router is not None:
     app.include_router(orders_router)

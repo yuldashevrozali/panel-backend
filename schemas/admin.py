@@ -56,3 +56,32 @@ class AdminStatsRead(BaseModel):
 
 class AdminCreate(BaseModel):
     email: EmailStr
+
+
+class AdminPaymentRead(BaseModel):
+    id: int
+    user_id: int
+    user_email: str | None = None
+    user_name: str | None = None
+    amount: Decimal
+    currency: str
+    method: str
+    status: str
+    rejection_reason: str | None = None
+    reviewed_by: int | None = None
+    reviewer_email: str | None = None
+    reviewed_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminPaymentList(BaseModel):
+    items: list[AdminPaymentRead]
+    total: int
+    pending_count: int
+    limit: int
+    offset: int
+
+
+class AdminRejectPayload(BaseModel):
+    rejection_reason: str | None = Field(default=None, max_length=255)

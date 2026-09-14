@@ -6,6 +6,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     JSON,
     Numeric,
     String,
@@ -53,7 +54,11 @@ class Order(Base):
         Index("ix_orders_external_order_id", "external_order_id"),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
     )
@@ -97,12 +102,21 @@ class WalletTransaction(Base):
         Index("ix_wallet_transactions_user_created_at", "user_id", "created_at"),
     )
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     order_id: Mapped[int | None] = mapped_column(
         ForeignKey("orders.id", ondelete="RESTRICT"), nullable=True, unique=True
+    )
+    payment_request_id: Mapped[int | None] = mapped_column(
+        ForeignKey("payment_requests.id", ondelete="RESTRICT"),
+        nullable=True,
+        unique=True,
     )
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
     transaction_type: Mapped[str] = mapped_column(String(30), nullable=False)
@@ -129,3 +143,46 @@ class TelegramLoginReplay(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class PaymentRequest(Base):
+    __tablename__ = "payment_requests"
+    __table_args__ = (
+        Index("ix_payment_requests_user_created_at", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), nullable=False, default="USD")
+    method: Mapped[str] = mapped_column(String(30), nullable=False, default="admin")
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", index=True
+    )
+    rejection_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reviewed_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=True
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+    reviewer: Mapped[User | None] = relationship(foreign_keys=[reviewed_by])
