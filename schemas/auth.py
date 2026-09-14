@@ -9,3 +9,7 @@ class TelegramAuthData(BaseModel):
     photo_url: str | None = None
     auth_date: int
     hash: str
+
+
+class GoogleAuthData(BaseModel):
+    credential: str

@@ -6,6 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database.connection import engine, get_db
+from database.migrations import run_migrations
 from database.models import Base, User
 from routers.auth import router as auth_router
 from routers.security import get_current_user
@@ -110,6 +111,11 @@ if orders_router is not None:
 # ============================================================
 # DATABASE
 # ============================================================
+
+try:
+    run_migrations()
+except Exception as exc:
+    print(f"Migration warning: {exc}")
 
 Base.metadata.create_all(bind=engine)
 

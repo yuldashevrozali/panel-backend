@@ -11,8 +11,11 @@ from database.connection import get_db
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.exc import IntegrityError
 
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token
+
 from database.models import TelegramLoginReplay, User
-from schemas.auth import TelegramAuthData
+from schemas.auth import GoogleAuthData, TelegramAuthData
 from routers.security import create_access_token
 
 
@@ -125,6 +128,96 @@ def telegram_login(data: TelegramAuthData, db: Session = Depends(get_db)):
         telegram_id=data.id,
         username=data.username,
         first_name=data.first_name,
+        balance=0,
+    )
+
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    token = create_access_token(user.id)
+
+    return {
+        "message": "Account created and login successful",
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "telegram_id": user.telegram_id,
+            "username": user.username,
+            "first_name": user.first_name,
+            "balance": user.balance,
+        },
+    }
+
+
+def verify_google_auth(credential: str) -> dict:
+    google_client_id = os.getenv("GOOGLE_CLIENT_ID")
+    if not google_client_id:
+        raise HTTPException(
+            status_code=500, detail="Google client ID is not configured"
+        )
+
+    try:
+        id_info = id_token.verify_oauth2_token(
+            credential, google_requests.Request(), google_client_id
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=401, detail="Invalid Google authentication credential"
+        ) from exc
+
+    sub = id_info.get("sub")
+    if not sub:
+        raise HTTPException(status_code=401, detail="Google token missing sub claim")
+
+    iss = id_info.get("iss")
+    if iss not in ["accounts.google.com", "https://accounts.google.com"]:
+        raise HTTPException(status_code=401, detail="Invalid Google token issuer")
+
+    return id_info
+
+
+@router.post("/google")
+def google_login(data: GoogleAuthData, db: Session = Depends(get_db)):
+    id_info = verify_google_auth(data.credential)
+
+    google_sub = str(id_info["sub"])
+    email = id_info.get("email")
+    first_name = id_info.get("given_name") or id_info.get("name") or "Google User"
+
+    # Userni database'dan google_sub bo'yicha qidirish
+    user = db.query(User).filter(User.google_sub == google_sub).first()
+
+    if user:
+        if email and user.email != email:
+            user.email = email
+        if first_name and not user.first_name:
+            user.first_name = first_name
+
+        db.commit()
+        db.refresh(user)
+
+        token = create_access_token(user.id)
+
+        return {
+            "message": "Login successful",
+            "access_token": token,
+            "token_type": "bearer",
+            "user": {
+                "id": user.id,
+                "telegram_id": user.telegram_id,
+                "username": user.username,
+                "first_name": user.first_name,
+                "balance": user.balance,
+            },
+        }
+
+    # Yangi Google user yaratish
+    user = User(
+        google_sub=google_sub,
+        email=email,
+        first_name=first_name,
         balance=0,
     )
 
