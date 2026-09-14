@@ -27,6 +27,16 @@ if not 5 <= JWT_EXPIRE_MINUTES <= 1440:
 
 security = HTTPBearer(auto_error=False)
 
+PRIMARY_ADMIN_EMAIL = (
+    os.getenv("PRIMARY_ADMIN_EMAIL", "yuldashevrozalibek1@gmail.com").strip().lower()
+)
+
+
+def is_primary_super_admin(user: User) -> bool:
+    if user.email and user.email.strip().lower() == PRIMARY_ADMIN_EMAIL:
+        return True
+    return False
+
 
 def create_access_token(user_id: int):
     expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
@@ -61,4 +71,27 @@ def get_current_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    if is_primary_super_admin(user) and user.role != "super_admin":
+        user.role = "super_admin"
+        db.commit()
+        db.refresh(user)
+
     return user
+
+
+def require_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if current_user.role in ("admin", "super_admin") or is_primary_super_admin(
+        current_user
+    ):
+        return current_user
+    raise HTTPException(status_code=403, detail="Admin access required")
+
+
+def require_super_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if current_user.role == "super_admin" or is_primary_super_admin(current_user):
+        return current_user
+    raise HTTPException(status_code=403, detail="Super Admin access required")

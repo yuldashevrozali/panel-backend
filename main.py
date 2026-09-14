@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from database.connection import engine, get_db
 from database.migrations import run_migrations
 from database.models import Base, User
+from routers.admin import router as admin_router
 from routers.auth import router as auth_router
 from routers.security import get_current_user
 from routers.services import router as services_router
@@ -103,6 +104,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(services_router)
+app.include_router(admin_router)
 
 if orders_router is not None:
     app.include_router(orders_router)
@@ -214,8 +216,11 @@ if ENABLE_DEBUG_ENDPOINTS:
         return {
             "id": current_user.id,
             "telegram_id": current_user.telegram_id,
+            "google_sub": current_user.google_sub,
+            "email": current_user.email,
             "username": current_user.username,
             "first_name": current_user.first_name,
+            "role": current_user.role,
             "balance": current_user.balance,
             "created_at": current_user.created_at,
         }

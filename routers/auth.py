@@ -24,8 +24,27 @@ load_dotenv()
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+PRIMARY_ADMIN_EMAIL = (
+    os.getenv("PRIMARY_ADMIN_EMAIL", "yuldashevrozalibek1@gmail.com").strip().lower()
+)
 AUTH_MAX_AGE_SECONDS = int(os.getenv("TELEGRAM_AUTH_MAX_AGE_SECONDS", "300"))
 AUTH_FUTURE_SKEW_SECONDS = 60
+
+
+def serialize_user(user: User) -> dict:
+    role = user.role or "user"
+    if user.email and user.email.strip().lower() == PRIMARY_ADMIN_EMAIL:
+        role = "super_admin"
+    return {
+        "id": user.id,
+        "telegram_id": user.telegram_id,
+        "google_sub": user.google_sub,
+        "email": user.email,
+        "username": user.username,
+        "first_name": user.first_name,
+        "balance": user.balance,
+        "role": role,
+    }
 
 
 def verify_telegram_auth(data: TelegramAuthData) -> str:
@@ -114,13 +133,7 @@ def telegram_login(data: TelegramAuthData, db: Session = Depends(get_db)):
             "message": "Login successful",
             "access_token": token,
             "token_type": "bearer",
-            "user": {
-                "id": user.id,
-                "telegram_id": user.telegram_id,
-                "username": user.username,
-                "first_name": user.first_name,
-                "balance": user.balance,
-            },
+            "user": serialize_user(user),
         }
 
     # User mavjud bo'lmasa yangi account
@@ -141,13 +154,7 @@ def telegram_login(data: TelegramAuthData, db: Session = Depends(get_db)):
         "message": "Account created and login successful",
         "access_token": token,
         "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "telegram_id": user.telegram_id,
-            "username": user.username,
-            "first_name": user.first_name,
-            "balance": user.balance,
-        },
+        "user": serialize_user(user),
     }
 
 
@@ -195,6 +202,13 @@ def google_login(data: GoogleAuthData, db: Session = Depends(get_db)):
         if first_name and not user.first_name:
             user.first_name = first_name
 
+        if (
+            user.email
+            and user.email.strip().lower() == PRIMARY_ADMIN_EMAIL
+            and user.role != "super_admin"
+        ):
+            user.role = "super_admin"
+
         db.commit()
         db.refresh(user)
 
@@ -204,20 +218,16 @@ def google_login(data: GoogleAuthData, db: Session = Depends(get_db)):
             "message": "Login successful",
             "access_token": token,
             "token_type": "bearer",
-            "user": {
-                "id": user.id,
-                "telegram_id": user.telegram_id,
-                "username": user.username,
-                "first_name": user.first_name,
-                "balance": user.balance,
-            },
+            "user": serialize_user(user),
         }
 
     # Yangi Google user yaratish
+    is_primary = bool(email and email.strip().lower() == PRIMARY_ADMIN_EMAIL)
     user = User(
         google_sub=google_sub,
         email=email,
         first_name=first_name,
+        role="super_admin" if is_primary else "user",
         balance=0,
     )
 
@@ -231,11 +241,5 @@ def google_login(data: GoogleAuthData, db: Session = Depends(get_db)):
         "message": "Account created and login successful",
         "access_token": token,
         "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "telegram_id": user.telegram_id,
-            "username": user.username,
-            "first_name": user.first_name,
-            "balance": user.balance,
-        },
+        "user": serialize_user(user),
     }

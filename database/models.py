@@ -30,6 +30,9 @@ class User(Base):
         String(100), unique=True, nullable=True, index=True
     )
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    role: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
     username: Mapped[str | None] = mapped_column(String(100))
     first_name: Mapped[str | None] = mapped_column(String(100))
     balance: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"))
