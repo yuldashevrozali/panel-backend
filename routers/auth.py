@@ -18,8 +18,6 @@ from routers.security import create_access_token
 
 load_dotenv()
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
@@ -28,7 +26,8 @@ AUTH_FUTURE_SKEW_SECONDS = 60
 
 
 def verify_telegram_auth(data: TelegramAuthData) -> str:
-    if not TELEGRAM_BOT_TOKEN:
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not bot_token:
         raise HTTPException(
             status_code=500, detail="Telegram bot token is not configured"
         )
@@ -38,7 +37,11 @@ def verify_telegram_auth(data: TelegramAuthData) -> str:
     # Excluding absent optional fields is essential for an exact hash match.
     data_dict = data.model_dump(exclude_none=True)
 
-    received_hash = data_dict.pop("hash")
+    received_hash = data_dict.pop("hash", None)
+    if not received_hash:
+        raise HTTPException(
+            status_code=400, detail="Missing Telegram authentication hash"
+        )
 
     # key=value format
     data_check_string = "\n".join(
@@ -46,28 +49,30 @@ def verify_telegram_auth(data: TelegramAuthData) -> str:
     )
 
     # Telegram bot tokenidan secret key
-    secret_key = hashlib.sha256(TELEGRAM_BOT_TOKEN.encode()).digest()
+    secret_key = hashlib.sha256(bot_token.encode()).digest()
 
     # HMAC-SHA256
     calculated_hash = hmac.new(
         secret_key, data_check_string.encode(), hashlib.sha256
     ).hexdigest()
 
-    # Hashlarni solishtirish
-    if not hmac.compare_digest(calculated_hash, received_hash):
-        raise HTTPException(status_code=401, detail="Invalid Telegram authentication")
+    # Hashlarni solishtirish (case-insensitive check)
+    if not hmac.compare_digest(calculated_hash.lower(), received_hash.lower()):
+        raise HTTPException(
+            status_code=401, detail="Invalid Telegram authentication signature"
+        )
 
     # Eski authentication ma'lumotlarini qabul qilmaslik
     current_time = int(time.time())
 
-    if current_time - data.auth_date > 86400:
+    if current_time - data.auth_date > AUTH_MAX_AGE_SECONDS:
         raise HTTPException(
             status_code=401, detail="Telegram authentication data expired"
         )
     if data.auth_date - current_time > AUTH_FUTURE_SKEW_SECONDS:
-        raise HTTPException(status_code=401, detail="Telegram authentication timestamp is invalid")
-    if current_time - data.auth_date > AUTH_MAX_AGE_SECONDS:
-        raise HTTPException(status_code=401, detail="Telegram authentication data expired")
+        raise HTTPException(
+            status_code=401, detail="Telegram authentication timestamp is invalid"
+        )
     return hashlib.sha256(data_check_string.encode()).hexdigest()
 
 
@@ -75,13 +80,19 @@ def verify_telegram_auth(data: TelegramAuthData) -> str:
 def telegram_login(data: TelegramAuthData, db: Session = Depends(get_db)):
     # Telegram ma'lumotlarini tekshirish
     payload_hash = verify_telegram_auth(data)
-    replay = TelegramLoginReplay(payload_hash=payload_hash, telegram_id=data.id, expires_at=datetime.now(timezone.utc) + timedelta(seconds=AUTH_MAX_AGE_SECONDS))
+    replay = TelegramLoginReplay(
+        payload_hash=payload_hash,
+        telegram_id=data.id,
+        expires_at=datetime.now(timezone.utc) + timedelta(seconds=AUTH_MAX_AGE_SECONDS),
+    )
     db.add(replay)
     try:
         db.flush()
     except IntegrityError as exc:
         db.rollback()
-        raise HTTPException(status_code=401, detail="Telegram authentication payload was already used") from exc
+        raise HTTPException(
+            status_code=401, detail="Telegram authentication payload was already used"
+        ) from exc
 
     # Userni database'dan qidirish
     user = db.query(User).filter(User.telegram_id == data.id).first()
